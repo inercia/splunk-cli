@@ -1,0 +1,70 @@
+{
+  "version": "2.0.0",
+  "options": {
+    "cwd": "${workspaceFolder}"
+  },
+  "tasks": [
+    {
+      "label": "Build",
+      "type": "shell",
+      "command": "make build",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "Test",
+      "type": "shell",
+      "command": "make test",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "Format",
+      "type": "shell",
+      "command": "make fmt",
+      "problemMatcher": []
+    },
+    {
+      "label": "Lint",
+      "type": "shell",
+      "command": "make lint",
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "Tidy",
+      "type": "shell",
+      "command": "make tidy",
+      "problemMatcher": []
+    },
+    {
+      "label": "Check (fmt, lint, build, test)",
+      "type": "shell",
+      "command": "echo Running checks...",
+      "dependsOn": ["Format", "Lint", "Build", "Test"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run: splunk-cli",
+      "type": "shell",
+      "command": "go",
+      "args": ["run", "./cmd/splunk-cli"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Run: splunk-cli search",
+      "type": "shell",
+      "command": "go",
+      "args": ["run", "./cmd/splunk-cli", "search", "${input.searchQuery}"],
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "searchQuery",
+      "type": "promptString",
+      "description": "Enter Splunk query (e.g., index=main error)",
+      "default": "index=main error"
+    }
+  ]
+}
