@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -24,6 +25,7 @@ type Client struct {
 	token          string
 	skipTLSVerify  bool
 	defaultTimeout time.Duration
+	verbose        bool
 }
 
 // NewClient constructs a Splunk client from the given configuration.
@@ -47,23 +49,60 @@ func NewClient(config Config) (*Client, error) {
 		httpClient:     httpClient,
 		username:       config.Username,
 		password:       config.Password,
-		token:          config.Token,
+		token:          strings.TrimSpace(config.Token),
 		skipTLSVerify:  config.SkipTLSVerify,
 		defaultTimeout: config.DefaultTimeout,
+		verbose:        config.Verbose,
 	}
 	return client, nil
 }
 
-func parsePositiveInt(value string) (int, error) {
-	var n int
-	_, err := fmt.Sscanf(value, "%d", &n)
-	if err != nil {
-		return 0, err
+func (c *Client) debugf(format string, args ...any) {
+	if c.verbose {
+		_, _ = fmt.Fprintf(os.Stderr, "[DEBUG] "+format+"\n", args...)
 	}
-	if n <= 0 {
-		return 0, fmt.Errorf("value must be > 0: %s", value)
+}
+
+func (c *Client) redactHeader(key, value string) string {
+	k := strings.ToLower(strings.TrimSpace(key))
+	switch k {
+	//case "authorization", "cookie", "x-auth-token":
+	//	return "***redacted***"
+	default:
+		return value
 	}
-	return n, nil
+}
+
+func (c *Client) logRequest(req *http.Request, bodyPreview string) {
+	if !c.verbose {
+		return
+	}
+	c.debugf("%s %s", req.Method, req.URL.String())
+	for k, vv := range req.Header {
+		if len(vv) == 0 {
+			continue
+		}
+		c.debugf("-> %s: %s", k, c.redactHeader(k, vv[0]))
+	}
+	if bodyPreview != "" {
+		c.debugf("-> body: %s", bodyPreview)
+	}
+}
+
+func (c *Client) logResponse(resp *http.Response, bodyPreview string) {
+	if !c.verbose || resp == nil {
+		return
+	}
+	c.debugf("<- %s", resp.Status)
+	for k, vv := range resp.Header {
+		if len(vv) == 0 {
+			continue
+		}
+		c.debugf("<- %s: %s", k, c.redactHeader(k, vv[0]))
+	}
+	if bodyPreview != "" {
+		c.debugf("<- body: %s", bodyPreview)
+	}
 }
 
 // Authenticate logs into Splunk and obtains a session token if not already provided.
@@ -86,13 +125,25 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
+	// Log request with password redacted
+	if c.verbose {
+		preview := strings.ReplaceAll(form.Encode(), "password="+c.password, "password=***redacted***")
+		c.logRequest(req, preview)
+	}
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	c.logResponse(resp, string(body))
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("login failed: status=%d body=%s", resp.StatusCode, string(body))
 	}
 
@@ -100,17 +151,13 @@ func (c *Client) Authenticate(ctx context.Context) error {
 	var xmlResp struct {
 		SessionKey string `xml:"sessionKey"`
 	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
 	if err := xml.Unmarshal(body, &xmlResp); err != nil {
 		return fmt.Errorf("failed parsing login XML: %w", err)
 	}
-	if xmlResp.SessionKey == "" {
+	if strings.TrimSpace(xmlResp.SessionKey) == "" {
 		return errors.New("empty session key from login")
 	}
-	c.token = xmlResp.SessionKey
+	c.token = strings.TrimSpace(xmlResp.SessionKey)
 	return nil
 }
 
@@ -153,6 +200,8 @@ func (c *Client) CreateSearchJob(ctx context.Context, searchQuery string, option
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Splunk "+c.token)
 
+	c.logRequest(req, form.Encode())
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", err
@@ -160,6 +209,7 @@ func (c *Client) CreateSearchJob(ctx context.Context, searchQuery string, option
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
+		c.logResponse(resp, string(b))
 		return "", fmt.Errorf("create job failed: status=%d body=%s", resp.StatusCode, string(b))
 	}
 
@@ -167,6 +217,7 @@ func (c *Client) CreateSearchJob(ctx context.Context, searchQuery string, option
 	if err != nil {
 		return "", err
 	}
+	c.logResponse(resp, string(body))
 
 	// Splunk may return JSON or XML; try JSON first then XML
 	var jsonResp struct {
@@ -222,6 +273,8 @@ func (c *Client) isJobDone(ctx context.Context, sid string) (bool, error) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Splunk "+c.token)
 	}
+	c.logRequest(req, "")
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return false, err
@@ -229,6 +282,7 @@ func (c *Client) isJobDone(ctx context.Context, sid string) (bool, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
+		c.logResponse(resp, string(b))
 		return false, fmt.Errorf("job status failed: status=%d body=%s", resp.StatusCode, string(b))
 	}
 
@@ -242,6 +296,7 @@ func (c *Client) isJobDone(ctx context.Context, sid string) (bool, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 		return false, err
 	}
+	c.logResponse(resp, "(json)")
 	if len(status.Entry) == 0 {
 		return false, errors.New("job status response missing entry")
 	}
@@ -272,6 +327,8 @@ func (c *Client) GetSearchResults(ctx context.Context, sid string, count int) (*
 	if c.token != "" {
 		req.Header.Set("Authorization", "Splunk "+c.token)
 	}
+	c.logRequest(req, "")
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -279,6 +336,7 @@ func (c *Client) GetSearchResults(ctx context.Context, sid string, count int) (*
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
+		c.logResponse(resp, string(b))
 		return nil, fmt.Errorf("get results failed: status=%d body=%s", resp.StatusCode, string(b))
 	}
 
@@ -289,6 +347,7 @@ func (c *Client) GetSearchResults(ctx context.Context, sid string, count int) (*
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, err
 	}
+	c.logResponse(resp, "(json)")
 
 	normalized := make([]map[string]string, 0, len(payload.Results))
 	for _, rec := range payload.Results {

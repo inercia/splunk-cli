@@ -12,12 +12,13 @@ import (
 
 // Config holds configuration options for the Splunk client.
 type Config struct {
-    BaseURL        string
-    Username       string
-    Password       string
-    Token          string
-    SkipTLSVerify  bool
-    DefaultTimeout time.Duration
+	BaseURL        string
+	Username       string
+	Password       string
+	Token          string
+	SkipTLSVerify  bool
+	DefaultTimeout time.Duration
+	Verbose        bool
 }
 
 // NewSplunkConfig constructs a splunk.Config where CLI flags take precedence
@@ -32,11 +33,39 @@ func NewSplunkConfig(cmd *cobra.Command) (Config, error) {
 		baseURL = fmt.Sprintf("%s://%s:%s", scheme, host, port)
 	}
 
-	username := getStr(cmd, "splunk-username", "SPLUNK_USERNAME", "")
-	password := getStr(cmd, "splunk-password", "SPLUNK_PASSWORD", "")
-	token := getStr(cmd, "splunk-token", "SPLUNK_TOKEN", "")
+	// Credential precedence:
+	// 1) If --splunk-token flag is provided, use it
+	// 2) Else if either --splunk-username or --splunk-password flag is provided, use those
+	// 3) Else if SPLUNK_TOKEN env is set, use it
+	// 4) Else fall back to SPLUNK_USERNAME/PASSWORD env vars
+	usernameFlagChanged := cmd.Flags().Changed("splunk-username")
+	passwordFlagChanged := cmd.Flags().Changed("splunk-password")
+	tokenFlagChanged := cmd.Flags().Changed("splunk-token")
+
+	usernameFlag, _ := cmd.Flags().GetString("splunk-username")
+	passwordFlag, _ := cmd.Flags().GetString("splunk-password")
+	tokenFlag, _ := cmd.Flags().GetString("splunk-token")
+
+	usernameEnv := strings.TrimSpace(os.Getenv("SPLUNK_USERNAME"))
+	passwordEnv := strings.TrimSpace(os.Getenv("SPLUNK_PASSWORD"))
+	tokenEnv := strings.TrimSpace(os.Getenv("SPLUNK_TOKEN"))
+
+	var username, password, token string
+	if tokenFlagChanged {
+		token = tokenFlag
+	} else if usernameFlagChanged || passwordFlagChanged {
+		username = usernameFlag
+		password = passwordFlag
+	} else if tokenEnv != "" {
+		token = tokenEnv
+	} else {
+		username = usernameEnv
+		password = passwordEnv
+	}
+
 	insecure := getBool(cmd, "splunk-insecure", "SPLUNK_INSECURE", false)
 	timeoutSeconds := getInt(cmd, "splunk-timeout", "SPLUNK_TIMEOUT_SECONDS", 60)
+	verbose := getBool(cmd, "verbose", "SPLUNK_VERBOSE", false)
 
 	return Config{
 		BaseURL:        baseURL,
@@ -45,6 +74,7 @@ func NewSplunkConfig(cmd *cobra.Command) (Config, error) {
 		Token:          token,
 		SkipTLSVerify:  insecure,
 		DefaultTimeout: time.Duration(timeoutSeconds) * time.Second,
+		Verbose:        verbose,
 	}, nil
 }
 

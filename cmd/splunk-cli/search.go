@@ -37,7 +37,7 @@ var searchCmd = &cobra.Command{
 		}
 		query := strings.Join(args, " ")
 
-        client, err := newClientFromFlagsAndEnv(cmd)
+		client, err := newClientFromFlagsAndEnv(cmd)
 		if err != nil {
 			return err
 		}
